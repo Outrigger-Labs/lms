@@ -1,0 +1,90 @@
+# Manages the thin-fork treadmill: watches upstream frappe/lms for new
+# releases and attempts to rebase our patch commits (everything on
+# outriggr-main past its upstream base tag) onto each new tag.
+#
+#  - Clean rebase  -> pushes candidate/<tag> and opens an issue: run the
+#    concordance re-verify checklist, then fast-forward outriggr-main and
+#    update the FC bench when ready. Upgrades stay a deliberate ritual —
+#    nothing auto-deploys.
+#  - Conflict      -> opens an issue with the failing state; resolve by
+#    re-applying the (tiny) patch by hand onto the new tag.
+#
+# NOTE: GitHub disables scheduled workflows on forks until Actions is
+# enabled in the fork's Actions tab; workflow_dispatch always works.
+name: upstream-rebase
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebase-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: outriggr-main
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream https://github.com/frappe/lms.git
+          git fetch upstream --tags --quiet
+
+      - name: Determine base and latest release
+        id: vers
+        run: |
+          current=$(git describe --tags --abbrev=0 outriggr-main)
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "base $current -> latest $latest"
+
+      - name: Skip if already current or already reported
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.vers.outputs.latest }}" = "${{ steps.vers.outputs.current }}" ]; then
+            echo "proceed=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          existing=$(gh issue list --state open --search "lms ${{ steps.vers.outputs.latest }} in:title" --json number --jq length)
+          if [ "$existing" != "0" ]; then
+            echo "proceed=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt rebase onto latest
+        if: steps.gate.outputs.proceed == 'yes'
+        id: rebase
+        run: |
+          git config user.name "outriggr-ci"
+          git config user.email "ci@outriggr.ca"
+          git checkout -B "candidate/${{ steps.vers.outputs.latest }}" outriggr-main
+          if git rebase "${{ steps.vers.outputs.latest }}"; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            git push -f origin "candidate/${{ steps.vers.outputs.latest }}"
+          else
+            git rebase --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open report issue
+        if: steps.gate.outputs.proceed == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.rebase.outputs.result }}" = "clean" ]; then
+            gh issue create \
+              --title "lms ${{ steps.vers.outputs.latest }}: rebase clean — candidate ready" \
+              --body "candidate/${{ steps.vers.outputs.latest }} carries the portal-hook patch rebased onto upstream ${{ steps.vers.outputs.latest }} with no conflicts. Before adopting: run the per-upgrade re-verify checklist (outriggr_field_readiness docs/superpowers/research/2026-08-23-lms-functional-concordance.md), then fast-forward outriggr-main to the candidate and update the FC bench deliberately."
+          else
+            gh issue create \
+              --title "lms ${{ steps.vers.outputs.latest }}: rebase CONFLICT — manual re-apply needed" \
+              --body "Rebasing the portal-hook patch onto ${{ steps.vers.outputs.latest }} conflicted. The patch is ~18 lines across lms/www/_lms.py and frontend/index.html (see the patch commit on outriggr-main) — re-apply by hand onto the new tag, push as candidate/${{ steps.vers.outputs.latest }}, then follow the normal adoption ritual."
+          fi
