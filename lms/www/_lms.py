@@ -16,6 +16,11 @@ no_cache = 1
 def get_context():
 	context = frappe._dict()
 	context.boot = get_boot()
+	# Portal extension point: installed apps can add scripts to this shell via
+	# the `lms_portal_include_js` frappe hook — the portal-side analogue of
+	# app_include_js on desk shells. Delivered through boot (-> window vars),
+	# consumed by a small loader in frontend/index.html.
+	context.boot.portal_include_js = frappe.get_hooks("lms_portal_include_js") or []
 	frappe.db.commit()
 
 	app_path = frappe.form_dict.get("app_path")
