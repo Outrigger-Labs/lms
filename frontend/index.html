@@ -265,6 +265,19 @@
 		<script>
 			document.getElementById('seo-content').style.display = 'none';
 		</script>
+		<script>
+			// Portal extension point: installed apps can add scripts to this
+			// shell via the `lms_portal_include_js` frappe hook (see
+			// lms/www/_lms.py, which delivers the list through boot). Runs on
+			// DOMContentLoaded so the boot block has already populated window.
+			window.addEventListener('DOMContentLoaded', function () {
+				;(window.portal_include_js || []).forEach(function (src) {
+					var el = document.createElement('script')
+					el.src = src
+					document.body.appendChild(el)
+				})
+			})
+		</script>
 		<script type="module" src="/src/main.js"></script>
 	</body>
 </html>
