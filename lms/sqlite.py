@@ -136,9 +136,10 @@ class LearningSearch(SQLiteSearch):
 		"Job Opportunity": JOB_FIELDS,
 	}
 
-	def build_index(self):
+	def build_index(self, *args, **kwargs):
+		# frappe's build_index passes is_continuation (frappe 16.53); hand on whatever it passes.
 		try:
-			super().build_index()
+			super().build_index(*args, **kwargs)
 		except Exception as e:
 			frappe.throw(e)
 
